@@ -3,6 +3,7 @@ using System.Data.SqlClient;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Ultimate.ORM;
 
@@ -10,6 +11,12 @@ namespace SqlDelete
 {
     class Program
     {
+        static CancellationTokenSource cts = new CancellationTokenSource();
+        static Program()
+        {
+            Console.CancelKeyPress += (sender, args) => cts.Cancel();
+        }
+        
         static Lazy<ObjectMapper> objectMapper = new Lazy<ObjectMapper>();
         static async Task<int> Main(string[] args)
         {
@@ -64,7 +71,7 @@ namespace SqlDelete
         static async Task<ConstraintDetails> GetConstraintInfo(ConflictDeleteResult conflictDeleteResult)
         {
             await using var sqlConnection = new SqlConnection($"Data Source=localhost\\sqlexpress;Initial Catalog={conflictDeleteResult.Database};Integrated Security=SSPI");
-            await sqlConnection.OpenAsync();
+            await sqlConnection.OpenAsync(cts.Token);
             await using var sqlCommand = new SqlCommand(@$"
                 select rc.name ReferencedColumnName, pc.is_nullable ParentColumnIsNullable
                 from sys.foreign_key_columns fk
@@ -83,11 +90,11 @@ namespace SqlDelete
             try
             {
                 await using var sqlConnection = new SqlConnection($"Data Source=localhost\\sqlexpress;Initial Catalog={modifySpec.Database};Integrated Security=SSPI");
-                await sqlConnection.OpenAsync();
+                await sqlConnection.OpenAsync(cts.Token);
 
                 string sql = modifySpec.GetSql();
                 await using var sqlCommand = new SqlCommand(sql, sqlConnection) { CommandTimeout = 0 };
-                await sqlCommand.ExecuteNonQueryAsync();
+                await sqlCommand.ExecuteNonQueryAsync(cts.Token);
                 await Console.Out.WriteLineAsync(sql);
                 return new SuccessModifyResult();
             }
@@ -105,72 +112,5 @@ namespace SqlDelete
                 else throw ex;
             }
         }
-    }
-
-    public abstract class ModifySpec
-    {
-        public ModifySpec(string database, string table, string condition)
-        {
-            Database = database;
-            Table = Regex.Replace(table, @"^dbo\.", "");
-            Condition = condition;
-        }
-
-        public string Database{get;set;}
-        public string Table{get;set;}
-        public string Condition{get;set;}
-
-        public abstract string GetSql();
-    }
-
-    public class DeleteSpec : ModifySpec
-    {
-        public DeleteSpec(string database, string table, string condition) : base(database, table, condition)
-        {
-        }
-
-        public override string GetSql() => $"DELETE [{Table}] WHERE {Condition}";
-    }
-
-    public class NullOutSpec : ModifySpec
-    {
-        private readonly string column;
-
-        public NullOutSpec(string database, string table, string column, string condition) : base(database, table, condition)
-        {
-            this.column = column;
-        }
-
-        public override string GetSql() => $"UPDATE [{Table}] SET [{column}] = null WHERE {Condition}";
-    }
-
-    public abstract class ModifyResult
-    {
-    }
-
-    public class SuccessModifyResult : ModifyResult
-    {
-    }
-
-    public class ConflictDeleteResult : ModifyResult
-    {
-        public ConflictDeleteResult(string constraint, string database, string table, string column)
-        {
-            Constraint = constraint;
-            Database = database;
-            Table = table;
-            Column = column;
-        }
-
-        public string Constraint{get;set;}
-        public string Database{get;set;}
-        public string Table{get;set;}
-        public string Column{get;set;}
-    }
-
-    public class ConstraintDetails
-    {
-        public string ReferencedColumnName{get;set;}
-        public bool ParentColumnIsNullable{get;set;}
     }
 }
